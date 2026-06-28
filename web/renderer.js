@@ -10,6 +10,7 @@ import { simulate } from '../src/simulate.js';
 import { twoPhasePlan, posAt } from '../src/motion.js';
 import { chooseShot, applyError } from '../src/ai.js';
 
+const VERSION = '0.4'; // shown in the top-line title so players can report which build they run
 const VARIANTS = { snooker, pool, nineball, billiards };
 const canvas = document.getElementById('table');
 const ctx = canvas.getContext('2d');
@@ -561,7 +562,7 @@ el('selfplay').addEventListener('change', () => {
 el('game').addEventListener('change', (e) => {
   game = newGame(VARIANTS[e.target.value] ?? snooker);
   rebuildView();
-  el('title').textContent = `${variant.name.toUpperCase()} · event-driven two-phase physics`;
+  el('title').textContent = `${variant.name.toUpperCase()} · v${VERSION} · event-driven two-phase physics`;
   aiPlan = null;
   timeline = [];
   start();
@@ -578,6 +579,6 @@ function start() {
 }
 rebuildView();
 syncDifficultyUI();
-el('title').textContent = `${variant.name.toUpperCase()} · event-driven two-phase physics`;
+el('title').textContent = `${variant.name.toUpperCase()} · v${VERSION} · event-driven two-phase physics`;
 requestAnimationFrame(frame);
 start();

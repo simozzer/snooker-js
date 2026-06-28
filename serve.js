@@ -33,7 +33,11 @@ const server = createServer(async (req, res) => {
   }
   try {
     const body = await readFile(filePath);
-    res.writeHead(200, { 'Content-Type': TYPES[extname(filePath)] ?? 'application/octet-stream' });
+    res.writeHead(200, {
+      'Content-Type': TYPES[extname(filePath)] ?? 'application/octet-stream',
+      // dev server: never let the browser serve a stale module after an edit
+      'Cache-Control': 'no-store, must-revalidate',
+    });
     res.end(body);
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found');
