@@ -107,6 +107,7 @@ export const nineball = {
   id: 'nineball',
   name: '9-Ball Pool',
   ball: { radius: BALL.radius, mass: BALL.mass },
+  rackJitter: 0.0009, // ~0.9 mm: breaks the dead-centre symmetry so the pack actually scatters
   cloth: '#13557a',
   cueColor: '#f5f3ea',
   rulesText: [

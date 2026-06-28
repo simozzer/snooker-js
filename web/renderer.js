@@ -98,13 +98,16 @@ let placing = false;
 let pendingCue = null;
 let power = 1.0;
 let spin = { side: 0, vert: 0 };
+let frameShots = 0; // shots played this frame; 0 ⇒ the opening break
+const BREAK_POWER = 7.0; // open the frame with real pace (the pack won't scatter on a soft tap)
 
-// Reset the cue controls to their per-turn defaults (power 1.0, no spin) and sync the UI.
+// Reset the cue controls to their per-turn defaults (no spin; a firm power for the break, else
+// a gentle 1.0) and sync the UI.
 function resetControls() {
-  power = 1.0;
+  power = frameShots === 0 ? BREAK_POWER : 1.0;
   spin = { side: 0, vert: 0 };
-  el('power').value = '1';
-  el('pwrval').textContent = '1.0';
+  el('power').value = String(power);
+  el('pwrval').textContent = power.toFixed(1);
 }
 
 // fine-tune angle nudging
@@ -385,6 +388,7 @@ function fire() {
   const cp = cuePos();
   if (!cp) return;
   const res = takeShot(game, { angle: aimAngle, speed: power, spin, cuePlacement: cp });
+  frameShots += 1;
   timeline = res.timeline;
   meta = res.meta;
   endT = timeline.length ? timeline[timeline.length - 1].t : 0;
@@ -566,6 +570,7 @@ el('game').addEventListener('change', (e) => {
 // --- boot ---
 function start() {
   mode = 'aiming';
+  frameShots = 0; // a fresh frame opens with the break
   aimed = false;
   pendingCue = game.frame.ballInHand ? variant.defaultPlacement(game) : null;
   resetControls();

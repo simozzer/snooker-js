@@ -9,11 +9,13 @@ import { Ball } from './motion.js';
 import { simulate } from './simulate.js';
 import { snooker } from './variants/snooker.js';
 
-// A really-small random nudge to each racked ball (~0.25 mm) so no two frames play out
-// identically — a break is chaotically sensitive, so even a sub-visible offset diverges the run.
-// The magnitude is far below the rack gaps, so it can't create an initial overlap; we still clamp
-// to the table for safety. Pass { jitter: 0 } (or a seeded rng) for a deterministic layout.
-const PLACEMENT_JITTER = 0.00025; // metres
+// A small random nudge to each racked ball so no two frames play out identically — a break is
+// chaotically sensitive, so even a sub-visible offset diverges the run. A bigger nudge also
+// breaks the perfect symmetry of a dead-centre break (which otherwise passes energy straight
+// through the pack), so the pool/9-ball racks use a larger value (variant.rackJitter) to make the
+// pack actually scatter. After nudging we relax any overlap a tight rack may now have, leaving
+// balls just-touching rather than interpenetrating. Pass { jitter: 0 } for a deterministic layout.
+const PLACEMENT_JITTER = 0.00025; // metres — default (snooker/billiards); pool/9-ball override it
 
 function jitterPlacements(pieces, r, b, mag, rng) {
   if (mag <= 0) return;
@@ -22,11 +24,13 @@ function jitterPlacements(pieces, r, b, mag, rng) {
     const y = p.pos.y + (rng() * 2 - 1) * mag;
     p.pos = { x: Math.max(b.minX + r, Math.min(b.maxX - r, x)), y: Math.max(b.minY + r, Math.min(b.maxY - r, y)) };
   }
+  relaxOverlaps(pieces, r, b); // a larger nudge can overlap a tight rack → settle to just-touching
 }
 
-export function newGame(variant = snooker, { jitter = PLACEMENT_JITTER, rng = Math.random } = {}) {
+export function newGame(variant = snooker, { jitter, rng = Math.random } = {}) {
   const pieces = variant.rack();
-  jitterPlacements(pieces, variant.ball.radius, variant.bounds(), jitter, rng);
+  const mag = jitter ?? variant.rackJitter ?? PLACEMENT_JITTER; // jitter:0 stays 0 (deterministic)
+  jitterPlacements(pieces, variant.ball.radius, variant.bounds(), mag, rng);
   return { variant, frame: variant.newFrame(), pieces };
 }
 
