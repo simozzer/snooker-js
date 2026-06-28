@@ -523,6 +523,13 @@ function holdButton(id, setter) {
 }
 holdButton('angleL', (v) => { leftHeld = v; });
 holdButton('angleR', (v) => { rightHeld = v; });
+
+// Unlock/resume audio on the FIRST user gesture ANYWHERE — a button or a key, not only the table —
+// and again whenever the tab regains focus (browsers suspend the AudioContext in the background).
+// Without this, pressing Fire/Enter on a preset break leaves the context locked and the game silent.
+for (const evt of ['pointerdown', 'keydown', 'touchstart']) window.addEventListener(evt, unlockAudio, { passive: true });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) unlockAudio(); });
+
 window.addEventListener('keydown', (e) => {
   if (mode !== 'aiming' || isAITurn()) return;
   if (e.key === 'ArrowLeft') { leftHeld = true; e.preventDefault(); }
