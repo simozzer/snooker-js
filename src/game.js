@@ -9,8 +9,25 @@ import { Ball } from './motion.js';
 import { simulate } from './simulate.js';
 import { snooker } from './variants/snooker.js';
 
-export function newGame(variant = snooker) {
-  return { variant, frame: variant.newFrame(), pieces: variant.rack() };
+// A really-small random nudge to each racked ball (~0.25 mm) so no two frames play out
+// identically — a break is chaotically sensitive, so even a sub-visible offset diverges the run.
+// The magnitude is far below the rack gaps, so it can't create an initial overlap; we still clamp
+// to the table for safety. Pass { jitter: 0 } (or a seeded rng) for a deterministic layout.
+const PLACEMENT_JITTER = 0.00025; // metres
+
+function jitterPlacements(pieces, r, b, mag, rng) {
+  if (mag <= 0) return;
+  for (const p of pieces) {
+    const x = p.pos.x + (rng() * 2 - 1) * mag;
+    const y = p.pos.y + (rng() * 2 - 1) * mag;
+    p.pos = { x: Math.max(b.minX + r, Math.min(b.maxX - r, x)), y: Math.max(b.minY + r, Math.min(b.maxY - r, y)) };
+  }
+}
+
+export function newGame(variant = snooker, { jitter = PLACEMENT_JITTER, rng = Math.random } = {}) {
+  const pieces = variant.rack();
+  jitterPlacements(pieces, variant.ball.radius, variant.bounds(), jitter, rng);
+  return { variant, frame: variant.newFrame(), pieces };
 }
 
 export function buildBalls(pieces, ball) {

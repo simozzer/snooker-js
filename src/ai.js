@@ -54,6 +54,113 @@ function candidateShots(state) {
   return out;
 }
 
+// --- positional play (Tier 2: feasibility-aware leave) ---
+// A secondary term that rewards leaving the cue ball where the NEXT shot is actually MAKEABLE. It
+// is a single-ply look-ahead that REUSES what we already computed: the shot is simulated to rest,
+// so the cue ball's resting position and the surviving layout are in `res`. We learn the next
+// ball-on (and whether we keep the table) by replaying the variant's OWN rules on a throwaway copy
+// of the frame, then score the best next pot from the cue's rest spot — not by raw geometry, but
+// by a pot-PROBABILITY proxy that accounts for cut angle, shot length, and OBSTRUCTION of both the
+// cue→ghost and ball→pocket lines. Weighted below a pot, so it only biases the leave.
+const POSITION_WEIGHT = 36;
+const LEAVE_EFOLD = 1.6; // metres: shot-length e-folding in the pot-probability proxy
+
+// Distance from point C to segment A→B (both endpoints inclusive).
+function segPointDist(ax, ay, bx, by, cx, cy) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const L2 = dx * dx + dy * dy;
+  let t = L2 > 0 ? ((cx - ax) * dx + (cy - ay) * dy) / L2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const px = ax + t * dx;
+  const py = ay + t * dy;
+  return Math.hypot(cx - px, cy - py);
+}
+
+// Is the straight corridor from A to B clear of every blocker centre (ignoring ids in `skip`)?
+function pathClear(A, B, blockers, clearance, skip) {
+  for (const b of blockers) {
+    if (skip.has(b.id)) continue;
+    if (segPointDist(A.x, A.y, B.x, B.y, b.pos.x, b.pos.y) < clearance) return false;
+  }
+  return true;
+}
+
+// Best makeable next pot from `cuePos`, as a [0,1] pot-probability proxy. Considers every legal
+// next target into every pocket: rejects thin cuts and blocked lines, then scores by cut angle
+// (cos²) × shot-length decay. 0 means snookered / nothing on.
+function bestNextPotProb(state, cuePos) {
+  const variant = state.variant;
+  const R = variant.ball.radius;
+  const targets = variant.aiTargets(state);
+  const pockets = variant.pockets();
+  const blockers = state.pieces;
+  const clearance = 2 * R - 1e-3;
+  let best = 0;
+  for (const T of targets) {
+    const skipCG = new Set(['cue', T.id]); // cue→ghost: ignore the cue itself and the target
+    const skipTP = new Set([T.id]); // target→pocket: ignore the target
+    for (const pk of pockets) {
+      const toP = v.sub(pk.center, T.pos);
+      const dTP = v.len(toP);
+      if (dTP < 1e-6) continue;
+      const dir = v.scale(toP, 1 / dTP);
+      const ghost = v.sub(T.pos, v.scale(dir, 2 * R));
+      const sc = v.sub(ghost, cuePos);
+      const dCG = v.len(sc);
+      if (dCG < 1e-6) continue;
+      const cosCut = v.dot(v.scale(sc, 1 / dCG), dir);
+      if (cosCut <= 0.2) continue; // beyond ~78° cut: treat as unmakeable
+      if (!pathClear(cuePos, ghost, blockers, clearance, skipCG)) continue;
+      if (!pathClear(T.pos, pk.center, blockers, clearance, skipTP)) continue;
+      const p = cosCut * cosCut * Math.exp(-(dCG + dTP) / LEAVE_EFOLD);
+      if (p > best) best = p;
+    }
+  }
+  return best;
+}
+
+function positionBonus(state, res, pieceById) {
+  const variant = state.variant;
+  if (!variant.applyOutcome || !variant.aiTargets) return 0;
+
+  // build the rules info the variant expects (pieces, not ids)
+  const potted = [];
+  let cuePotted = false;
+  for (const id of res.pocketed) {
+    if (id === 'cue') { cuePotted = true; continue; }
+    const p = pieceById.get(id);
+    if (p) potted.push(p);
+  }
+  const firstContact = res.firstContact ? pieceById.get(res.firstContact) : null;
+  const cueContacts = (res.cueContacts || []).map((id) => pieceById.get(id)).filter(Boolean);
+
+  // ask the variant's real rules what happens next, on a disposable frame copy
+  const nf = structuredClone(state.frame);
+  let next;
+  try {
+    next = variant.applyOutcome(nf, { firstContact, potted, cuePotted, cueContacts, cushionHits: res.cushionHits || 0 });
+  } catch {
+    return 0;
+  }
+  if (!next || !next.continues || next.foul) return 0; // turn ends → our leave doesn't matter
+
+  // cue's resting position; if it's gone (scratch) there's no position to value
+  const cueBall = res.balls.find((b) => b.id === 'cue');
+  if (!cueBall || cueBall.pocketed) return 0;
+
+  // the surviving table after the shot, paired with the advanced (cloned) frame
+  const survivors = res.balls
+    .filter((b) => !b.pocketed)
+    .map((b) => { const p = pieceById.get(b.id); return p ? { ...p, pos: { x: b.pos.x, y: b.pos.y } } : null; })
+    .filter(Boolean);
+  const nextState = { variant, frame: nf, pieces: survivors };
+
+  const prob = bestNextPotProb(nextState, { x: cueBall.pos.x, y: cueBall.pos.y });
+  if (prob <= 0) return -0.35 * POSITION_WEIGHT; // continued, but snookered / no makeable next shot
+  return POSITION_WEIGHT * prob;
+}
+
 function scoreOutcome(state, res, pieceById) {
   const variant = state.variant;
   const frame = state.frame;
@@ -72,6 +179,7 @@ function scoreOutcome(state, res, pieceById) {
     if (variant.aiLegalPot(frame, p)) score += variant.aiValue(frame, p) + (variant.aiWinBonus ? variant.aiWinBonus(frame, p) : 0);
     else score -= variant.aiPenalty ? variant.aiPenalty(frame, p) : variant.aiValue(frame, p);
   }
+  score += positionBonus(state, res, pieceById);
   return score;
 }
 
