@@ -17,9 +17,9 @@
 export const VALUES = { red: 1, yellow: 2, green: 3, brown: 4, blue: 5, pink: 6, black: 7 };
 export const COLOUR_ORDER = ['yellow', 'green', 'brown', 'blue', 'pink', 'black'];
 
-export function newFrame() {
+export function newFrame(reds = 15) {
   return {
-    reds: 15,
+    reds,
     colours: { yellow: true, green: true, brown: true, blue: true, pink: true, black: true },
     scores: [0, 0],
     turn: 0, // 0 | 1

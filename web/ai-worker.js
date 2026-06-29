@@ -9,11 +9,12 @@
 // frame + pieces, both structure-cloneable.
 import { chooseShotGrid } from '../src/ai.js';
 import { snooker } from '../src/variants/snooker.js';
+import { doubleSnooker } from '../src/variants/doublesnooker.js';
 import { pool } from '../src/variants/pool.js';
 import { nineball } from '../src/variants/nineball.js';
 import { billiards } from '../src/variants/billiards.js';
 
-const VARIANTS = { snooker, pool, nineball, billiards };
+const VARIANTS = { snooker, doublesnooker: doubleSnooker, pool, nineball, billiards };
 
 self.onmessage = (e) => {
   const { variantName, frame, pieces, config, reqId } = e.data;

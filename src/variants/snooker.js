@@ -22,6 +22,7 @@ const isLegalPot = (on, color) => (on === 'red' ? color === 'red' : on === 'any-
 export const snooker = {
   id: 'snooker',
   name: 'Snooker',
+  redCount: 15, // reds in the opening rack (Double Snooker overrides this to 30)
   ball: { radius: BALL.radius, mass: BALL.mass },
   cloth: '#0e6b3d',
   cueColor: 'cue',
@@ -108,9 +109,10 @@ export const snooker = {
   // Returns [] when it isn't the opening break (full rack + ball-in-hand).
   aiBreakShots(state, style = 'safe') {
     const f = state.frame;
-    if (!(f.reds === 15 && f.ballInHand && COLOUR_ORDER.every((c) => f.colours[c]))) return [];
+    const full = this.redCount; // 15 (snooker) or 30 (double snooker)
+    if (!(f.reds === full && f.ballInHand && COLOUR_ORDER.every((c) => f.colours[c]))) return [];
     const reds = state.pieces.filter((p) => p.color === 'red');
-    if (reds.length < 15) return [];
+    if (reds.length < full) return [];
     const places = this.aiPlacements(state);
     if (!places.length) return [];
     const R = BALL.radius;
