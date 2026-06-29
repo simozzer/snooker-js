@@ -10,7 +10,7 @@ import { simulate } from '../src/simulate.js';
 import { twoPhasePlan, posAt } from '../src/motion.js';
 import { chooseShot, applyError } from '../src/ai.js';
 
-const VERSION = '0.7'; // shown in the top-line title so players can report which build they run (keep in sync with package.json)
+const VERSION = '0.7a'; // shown in the top-line title so players can report which build they run (keep in sync with package.json)
 const VARIANTS = { snooker, pool, nineball, billiards };
 const canvas = document.getElementById('table');
 const ctx = canvas.getContext('2d');
@@ -52,6 +52,10 @@ const difficulty = () => DIFFICULTY[selfPlay() ? 'deadly' : el('difficulty')?.va
 const trajectoryDepth = () => TRAJECTORY[el('trajectory')?.value] ?? TRAJECTORY.full;
 const aiEnabled = () => el('ai').checked;
 const selfPlay = () => el('selfplay').checked;
+// Computer-vs-computer plays out faster than a human watching a single shot: scale the replay
+// playback rate and the AI's line-up / think delays by this factor (1× for human play).
+const SELF_PLAY_SPEED = 3;
+const animSpeed = () => (selfPlay() ? SELF_PLAY_SPEED : 1);
 const soundOn = () => el('sound').checked;
 
 // --- game/variant state ---
@@ -357,7 +361,8 @@ function updateHud() {
 function frame(now) {
   drawTable();
   if (mode === 'animating') {
-    const simT = Math.min(((now - startedAt) / 1000) * 0.7, endT);
+    const rate = 0.7 * animSpeed(); // physics-seconds per wall-second (3× in self-play)
+    const simT = Math.min(((now - startedAt) / 1000) * rate, endT);
     while (soundIdx + 1 < timeline.length && timeline[soundIdx + 1].t <= simT) {
       soundIdx += 1;
       const s = timeline[soundIdx];
@@ -373,7 +378,7 @@ function frame(now) {
       const p = posAt(plan, simT - seg.t);
       drawBall(p.x, p.y, m.radius, m);
     }
-    if (((now - startedAt) / 1000) * 0.7 >= endT) endAnimation();
+    if (((now - startedAt) / 1000) * rate >= endT) endAnimation();
   } else {
     drawStatic();
     if (mode === 'aiplan' && aiPlan) {
@@ -409,7 +414,7 @@ function endAnimation() {
   aimed = false; // next player must aim before a trajectory is shown
   pendingCue = game.frame.ballInHand ? variant.defaultPlacement(game) : null;
   resetControls(); // each turn starts at power 1.0, no spin (the AI overrides during its plan)
-  if (isAITurn()) setTimeout(aiMove, 500);
+  if (isAITurn()) setTimeout(aiMove, 500 / animSpeed());
 }
 
 function fire() {
@@ -440,13 +445,13 @@ function aiMove() {
     spin = { side: 0, vert: 0 };
     aiPlan = { shot, startedAt: performance.now() };
     mode = 'aiplan';
-  }, 60);
+  }, 60 / animSpeed());
 }
 
 const easeInOut = (k) => (k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2);
 function renderAiPlan(now) {
   const { shot } = aiPlan;
-  const t = now - aiPlan.startedAt;
+  const t = (now - aiPlan.startedAt) * animSpeed(); // line-up animation runs 3× faster in self-play
   const placingNow = game.frame.ballInHand;
   const T_PLACE = placingNow ? 500 : 0;
   const tCharge0 = T_PLACE + 250;
