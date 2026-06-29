@@ -49,9 +49,42 @@
       details summary { cursor: pointer; font-weight: 600; font-size: 13px; color: #9fb4c7; padding: 6px 0; user-select: none; }
       details ul { margin: 4px 0 10px; padding-left: 20px; }
       details li { font-size: 13px; color: #cdd6df; margin: 4px 0; line-height: 1.45; }
+
+      /* animated aurora-blob background */
+      .bg-aurora {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        overflow: hidden;
+        background: #1c2229;
+      }
+      .bg-aurora .blob {
+        position: absolute;
+        width: 45vmax;
+        height: 45vmax;
+        border-radius: 50%;
+        filter: blur(80px);
+        opacity: 0.45;
+        mix-blend-mode: screen;
+      }
+      .blob-1 { background: #2e8b57; top: -12%; left: -10%; animation: drift-1 24s ease-in-out infinite; }
+      .blob-2 { background: #0e7490; top: 32%;  left: 52%;  animation: drift-2 29s ease-in-out infinite; }
+      .blob-3 { background: #c8923a; top: 58%;  left: 4%;   animation: drift-3 33s ease-in-out infinite; }
+      @keyframes drift-1 { 50% { transform: translate(30vw, 20vh) scale(1.2); } }
+      @keyframes drift-2 { 50% { transform: translate(-25vw, 15vh) scale(0.9); } }
+      @keyframes drift-3 { 50% { transform: translate(20vw, -20vh) scale(1.15); } }
+      @media (prefers-reduced-motion: reduce) {
+        .bg-aurora .blob { animation: none; }
+      }
     </style>
   </head>
   <body>
+    <div class="bg-aurora" aria-hidden="true">
+      <span class="blob blob-1"></span>
+      <span class="blob blob-2"></span>
+      <span class="blob blob-3"></span>
+    </div>
     <h1 id="title">SNOOKER · v0.10 · event-driven two-phase physics</h1>
     <div id="scoreboard">
       <div class="pl" id="pl0">You <span id="s0">0</span></div>
