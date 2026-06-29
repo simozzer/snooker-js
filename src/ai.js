@@ -89,10 +89,12 @@ function segPointDist(ax, ay, bx, by, cx, cy) {
   return Math.hypot(cx - px, cy - py);
 }
 
-// Is the straight corridor from A to B clear of every blocker centre (ignoring ids in `skip`)?
-function pathClear(A, B, blockers, clearance, skip) {
+// Is the straight corridor from A to B clear of every blocker centre (ignoring up to two ids)?
+// Takes the skip ids directly rather than a Set — this runs per target×pocket in a hot loop, and
+// allocating a 2-element Set each time was pure churn.
+function pathClear(A, B, blockers, clearance, skip1, skip2) {
   for (const b of blockers) {
-    if (skip.has(b.id)) continue;
+    if (b.id === skip1 || b.id === skip2) continue;
     if (segPointDist(A.x, A.y, B.x, B.y, b.pos.x, b.pos.y) < clearance) return false;
   }
   return true;
@@ -124,8 +126,6 @@ function bestNextPotProb(state, cuePos, adv = false) {
   let best = 0;
   for (const T of targets) {
     const w = byValue ? (valOf(T) / maxVal) ** 2 : 1; // play for the high-value ball (black after a red)
-    const skipCG = new Set(['cue', T.id]); // cue→ghost: ignore the cue itself and the target
-    const skipTP = new Set([T.id]); // target→pocket: ignore the target
     for (const pk of pockets) {
       const toP = v.sub(pk.center, T.pos);
       const dTP = v.len(toP);
@@ -137,8 +137,8 @@ function bestNextPotProb(state, cuePos, adv = false) {
       if (dCG < 1e-6) continue;
       const cosCut = v.dot(v.scale(sc, 1 / dCG), dir);
       if (cosCut <= 0.2) continue; // beyond ~78° cut: treat as unmakeable
-      if (!pathClear(cuePos, ghost, blockers, clearance, skipCG)) continue;
-      if (!pathClear(T.pos, pk.center, blockers, clearance, skipTP)) continue;
+      if (!pathClear(cuePos, ghost, blockers, clearance, 'cue', T.id)) continue; // ignore cue + target
+      if (!pathClear(T.pos, pk.center, blockers, clearance, T.id)) continue; // ignore the target
       const p = w * cosCut * cosCut * Math.exp(-(dCG + dTP) / LEAVE_EFOLD);
       if (p > best) best = p;
     }
@@ -224,14 +224,27 @@ function scoreOutcome(state, res, pieceById, adv = false) {
   return score;
 }
 
-function simScore(state, cuePos, angle, speed, spin, adv = false) {
+// Build the pieces array (cue placed at cuePos) and its id→piece map for a shot. simulate() never
+// mutates either — it works on the buildBalls() copy — so these are IDENTICAL across a candidate's
+// whole power×angle×spin grid and can be built once per candidate (see chooseShot).
+function cuePieces(state, cuePos) {
   const variant = state.variant;
   const pieces = state.pieces.map((p) => (p.id === 'cue' ? { ...p, pos: { ...cuePos } } : p));
   if (!pieces.some((p) => p.id === 'cue')) pieces.push({ id: 'cue', color: variant.cueColor, group: 'cue', kind: 'cue', pos: { ...cuePos } });
+  return { pieces, pieceById: new Map(pieces.map((p) => [p.id, p])) };
+}
+
+// Score one shot from a pre-built pieces/pieceById (only the fresh balls per sim are unavoidable).
+function simScoreP(state, pieces, pieceById, angle, speed, spin, adv) {
+  const variant = state.variant;
   const balls = buildBalls(pieces, variant.ball);
-  const pieceById = new Map(pieces.map((p) => [p.id, p]));
   const res = simulate({ balls, bounds: variant.bounds(), pockets: variant.pockets() }, { ballId: 'cue', angle, speed, spin }, { timeline: false, contactBall: 'cue' });
   return scoreOutcome(state, res, pieceById, adv);
+}
+
+function simScore(state, cuePos, angle, speed, spin, adv = false) {
+  const { pieces, pieceById } = cuePieces(state, cuePos);
+  return simScoreP(state, pieces, pieceById, angle, speed, spin, adv);
 }
 
 // Simulate one opening-break candidate and report what matters for picking a break by STYLE:
@@ -331,55 +344,47 @@ function cycleBonus(state, shot) {
 // cuePos → cuePlacement when the frame owes ball-in-hand. opts: maxCandidates / powerScales /
 // angleOffsets / spins (search), robust:{ angleErr, speedPct, keep } (play-to-reliability), and
 // rng (for the random opening-break style; defaults to Math.random).
-export function chooseShot(state, opts = {}) {
-  const variant = state.variant;
-  const adv = !!opts.advanced; // deadly difficulty enables the advanced AI features
-
-  // Opening break (deadly only): the variant supplies style-specific break shots; pick a style at
-  // RANDOM each frame (safe / attacking / firm), then choose the best shot for that style —
-  // least-disturbing leave with the cue back toward baulk for 'safe', biggest pack spread for
-  // 'attacking', a random clean contact for 'firm'.
-  if (adv && variant.aiBreakShots) {
-    const rng = opts.rng ?? Math.random;
-    const styles = ['safe', 'attacking', 'firm'];
-    const style = styles[Math.min(styles.length - 1, Math.floor(rng() * styles.length))];
-    const cands = variant.aiBreakShots(state, style);
-    const legal = cands.map((c) => ({ c, e: evalBreak(state, c) })).filter((x) => x.e.legal);
-    if (legal.length) {
-      let pick;
-      if (style === 'safe') {
-        // minimise pack disturbance, and prefer the cue returning toward baulk (not stuck up-table)
-        const cost = (x) => x.e.spread + 0.3 * Math.max(0, x.e.cueX - x.c.cuePos.x);
-        pick = legal.reduce((a, b) => (cost(b) < cost(a) ? b : a));
-      } else if (style === 'attacking') {
-        pick = legal.reduce((a, b) => (b.e.spread > a.e.spread ? b : a));
-      } else {
-        pick = legal[Math.floor(rng() * legal.length)];
-      }
-      return { ...pick.c, score: pick.e.safety };
-    }
-  }
-
+// Front half (parallelisable): score the power×angle×spin grid for the candidate lines and return
+// the flat `scored` list. A Web Worker pool calls this with slice = { workers, index } to score
+// only candidates where i % workers === index; the main thread merges every slice's results. Never
+// runs the opening-break path — that stays on the main thread (its random style mustn't fan out).
+export function chooseShotGrid(state, opts = {}) {
+  const adv = !!opts.advanced;
   const maxCandidates = opts.maxCandidates ?? 8;
   const powerScales = opts.powerScales ?? [0.85, 1.0, 1.25, 1.6];
   const angleOffsets = opts.angleOffsets ?? [-0.012, -0.004, 0, 0.004, 0.012];
   const spins = opts.spins ?? [{ side: 0, vert: 0 }, { side: 0, vert: 0.6 }, { side: 0, vert: -0.6 }];
-  const robust = opts.robust ?? null;
-  const cands = candidateShots(state).slice(0, maxCandidates);
+  const slice = opts.slice ?? null;
+  let cands = candidateShots(state).slice(0, maxCandidates);
+  if (slice) cands = cands.filter((_, i) => i % slice.workers === slice.index);
 
   const scored = [];
   for (const c of cands) {
+    // pieces/pieceById depend only on the cue position, which is fixed for this candidate's whole
+    // power×angle×spin grid — build them once instead of per simulated variant.
+    const { pieces, pieceById } = cuePieces(state, c.cuePos);
     for (const ps of powerScales) {
       const speed = Math.max(1.0, Math.min(MAX_SPEED, c.speed * ps));
       for (const ao of angleOffsets) {
         const angle = c.angle + ao;
         for (const sp of spins) {
-          const score = simScore(state, c.cuePos, angle, speed, sp, adv) + c.geom;
+          const score = simScoreP(state, pieces, pieceById, angle, speed, sp, adv) + c.geom;
           scored.push({ cuePos: c.cuePos, angle, speed, spin: sp, score });
         }
       }
     }
   }
+  return scored;
+}
+
+// Back half: given the merged grid `scored` (one sync pass, or every worker slice concatenated),
+// pick the final shot — sort, optional robustness re-rank, 2-ply cycle refinement, no-pot fallback.
+// Runs ONCE on the main thread so the top-K refinements operate on the GLOBAL top candidates,
+// identical to the single-threaded path. Mutates `scored` (sorts it in place).
+export function chooseShotFinish(state, opts, scored) {
+  const variant = state.variant;
+  const adv = !!opts.advanced;
+  const robust = opts.robust ?? null;
   scored.sort((a, b) => b.score - a.score);
 
   let best = scored[0] ?? null;
@@ -426,6 +431,37 @@ export function chooseShot(state, opts = {}) {
   }
   const angle = tgt ? Math.atan2(tgt.pos.y - cuePos.y, tgt.pos.x - cuePos.x) : 0;
   return { cuePos, angle, speed: 1.6, spin: { side: 0, vert: 0 }, score: best ? best.score : -1000 };
+}
+
+export function chooseShot(state, opts = {}) {
+  const variant = state.variant;
+  const adv = !!opts.advanced; // deadly difficulty enables the advanced AI features
+
+  // Opening break (deadly only): pick a style at RANDOM each frame (safe / attacking / firm), then
+  // the best shot for it. Main-thread only (skipped under a worker slice) — the random style and
+  // per-style pick must not fan out to a pool, where each worker would choose differently.
+  if (adv && !opts.slice && variant.aiBreakShots) {
+    const rng = opts.rng ?? Math.random;
+    const styles = ['safe', 'attacking', 'firm'];
+    const style = styles[Math.min(styles.length - 1, Math.floor(rng() * styles.length))];
+    const cands = variant.aiBreakShots(state, style);
+    const legal = cands.map((c) => ({ c, e: evalBreak(state, c) })).filter((x) => x.e.legal);
+    if (legal.length) {
+      let pick;
+      if (style === 'safe') {
+        // minimise pack disturbance, and prefer the cue returning toward baulk (not stuck up-table)
+        const cost = (x) => x.e.spread + 0.3 * Math.max(0, x.e.cueX - x.c.cuePos.x);
+        pick = legal.reduce((a, b) => (cost(b) < cost(a) ? b : a));
+      } else if (style === 'attacking') {
+        pick = legal.reduce((a, b) => (b.e.spread > a.e.spread ? b : a));
+      } else {
+        pick = legal[Math.floor(rng() * legal.length)];
+      }
+      return { ...pick.c, score: pick.e.safety };
+    }
+  }
+
+  return chooseShotFinish(state, opts, chooseShotGrid(state, opts));
 }
 
 // Execution error applied to the chosen shot: a random ±angleErr (rad) on the aim and

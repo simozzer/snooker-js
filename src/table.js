@@ -29,21 +29,23 @@ export const TABLE = {
 export const HX = TABLE.width / 2;
 export const HY = TABLE.height / 2;
 
-export const bounds = () => ({ minX: -HX, maxX: HX, minY: -HY, maxY: HY });
+// Memoised: the table geometry is constant, but bounds()/pockets() are called on every one of the
+// ~thousands of simulations per AI move. Returning cached instances removes that allocation churn.
+// (Callers treat both as read-only — verified — so sharing one instance is safe.)
+let _bounds;
+export const bounds = () => (_bounds ??= { minX: -HX, maxX: HX, minY: -HY, maxY: HY });
 
 // Six pockets: 4 corners + 2 middles (on the long rails at x = 0).
-export const pockets = () => {
-  const c = TABLE.cornerPocket;
-  const m = TABLE.middlePocket;
-  return [
-    { center: { x: -HX, y: -HY }, radius: c },
-    { center: { x: HX, y: -HY }, radius: c },
-    { center: { x: -HX, y: HY }, radius: c },
-    { center: { x: HX, y: HY }, radius: c },
-    { center: { x: 0, y: -HY }, radius: m },
-    { center: { x: 0, y: HY }, radius: m },
-  ];
-};
+let _pockets;
+export const pockets = () =>
+  (_pockets ??= [
+    { center: { x: -HX, y: -HY }, radius: TABLE.cornerPocket },
+    { center: { x: HX, y: -HY }, radius: TABLE.cornerPocket },
+    { center: { x: -HX, y: HY }, radius: TABLE.cornerPocket },
+    { center: { x: HX, y: HY }, radius: TABLE.cornerPocket },
+    { center: { x: 0, y: -HY }, radius: TABLE.middlePocket },
+    { center: { x: 0, y: HY }, radius: TABLE.middlePocket },
+  ]);
 
 // Standard spot positions. Baulk is at −x; the D bulges toward baulk.
 export const baulkX = () => -HX + TABLE.baulkFromCushion;

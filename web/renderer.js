@@ -8,9 +8,9 @@ import { billiards } from '../src/variants/billiards.js';
 import { newGame, takeShot, buildBalls } from '../src/game.js';
 import { simulate } from '../src/simulate.js';
 import { twoPhasePlan, posAt } from '../src/motion.js';
-import { chooseShot, applyError } from '../src/ai.js';
+import { chooseShot, chooseShotFinish, applyError } from '../src/ai.js';
 
-const VERSION = '0.7a'; // shown in the top-line title so players can report which build they run (keep in sync with package.json)
+const VERSION = '0.8'; // shown in the top-line title so players can report which build they run (keep in sync with package.json)
 const VARIANTS = { snooker, pool, nineball, billiards };
 const canvas = document.getElementById('table');
 const ctx = canvas.getContext('2d');
@@ -433,18 +433,91 @@ function fire() {
   mode = 'animating';
 }
 
+// Take the AI's chosen shot and start its on-table line-up animation. Shared by the synchronous
+// path and the worker-pool finalize, so the only difference between them is WHERE the search ran.
+function applyAiShot(shot) {
+  if (!isAITurn() || mode === 'animating') return;
+  aiPlanFrom = game.frame.ballInHand ? pendingCue || variant.defaultPlacement(game) : cuePos() || variant.defaultPlacement(game);
+  power = 0;
+  spin = { side: 0, vert: 0 };
+  aiPlan = { shot, startedAt: performance.now() };
+  mode = 'aiplan';
+}
+
+// --- AI search: parallelised across a Web Worker pool ---
+// The candidate grid is split across CPU cores (each worker scores its slice and returns the scored
+// variants); the main thread merges them and runs chooseShotFinish — identical to a single-threaded
+// search, but ~cores× faster AND the main thread stays free so the table keeps animating while it
+// "thinks". The opening break (random style) and a synchronous fallback both run on the main thread.
+const AI_POOL_SIZE = Math.max(2, Math.min((typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4, 8));
+const AI_TIMEOUT_MS = 8000; // a worker that dies / never loads must not hang the turn
+let aiPool = null; // null = unbuilt, false = unavailable, else Worker[]
+let aiReqId = 0;
+let aiPending = null; // in-flight fan-out: { reqId, diff, config, pending:Set<Worker>, scored, replies, timer }
+function ensureAiPool() {
+  if (aiPool !== null || typeof Worker === 'undefined') return aiPool;
+  try {
+    aiPool = [];
+    for (let i = 0; i < AI_POOL_SIZE; i++) {
+      const w = new Worker(new URL('./ai-worker.js', import.meta.url), { type: 'module' });
+      w.onmessage = (e) => aiResolve(w, e.data.reqId, e.data.scored, false);
+      w.onerror = () => aiResolve(w, w._aiReq, null, true); // error carries no reqId → use the dispatch one
+      aiPool.push(w);
+    }
+  } catch {
+    aiPool = false;
+  }
+  return aiPool;
+}
+// A pool worker answered for `reqId` — its scored slice, or an error. Each worker counts at most
+// once, so neither a double-fire (message + error) nor a stale reply mis-balances the tally.
+function aiResolve(worker, reqId, scored, isError) {
+  if (!aiPending || reqId !== aiPending.reqId || !aiPending.pending.has(worker)) return;
+  aiPending.pending.delete(worker);
+  if (!isError) { aiPending.replies += 1; if (scored && scored.length) aiPending.scored.push(...scored); }
+  if (aiPending.pending.size === 0) finalizeAiSearch();
+}
+function aiTimeout(reqId) {
+  if (!aiPending || aiPending.reqId !== reqId) return;
+  aiPending.pending.clear();
+  finalizeAiSearch();
+}
+function finalizeAiSearch() {
+  clearTimeout(aiPending.timer);
+  const { scored, diff, config, replies } = aiPending;
+  aiPending = null;
+  // No worker even delivered a message → the pool is unusable (e.g. module workers unsupported).
+  // Tear it down so later turns go straight to sync instead of stalling on dead workers each time.
+  if (replies === 0 && Array.isArray(aiPool)) { for (const w of aiPool) w.terminate(); aiPool = false; }
+  if (!isAITurn() || mode !== 'aiming') return; // the turn moved on while it thought
+  // merge every slice → finish on the main thread (so the top-K refinements see the global best);
+  // an empty merge with live workers is a real no-candidate position → fall back to a full sync search
+  const shot = scored.length ? chooseShotFinish(game, config, scored) : chooseShot(game, config);
+  applyAiShot(applyError(shot, diff));
+}
+
 function aiMove() {
-  if (!isAITurn() || mode === 'gameover' || mode === 'animating') return;
+  if (!isAITurn() || mode === 'gameover' || mode === 'animating' || aiPending) return;
   el('msg').textContent = 'Computer thinking…';
   setTimeout(() => {
-    if (!isAITurn() || mode === 'animating') return;
+    if (!isAITurn() || mode === 'animating' || aiPending) return;
     const diff = difficulty();
-    const shot = applyError(chooseShot(game, { ...diff.search, robust: { angleErr: diff.angleErr, speedPct: diff.speedPct } }), diff);
-    aiPlanFrom = game.frame.ballInHand ? pendingCue || variant.defaultPlacement(game) : cuePos() || variant.defaultPlacement(game);
-    power = 0;
-    spin = { side: 0, vert: 0 };
-    aiPlan = { shot, startedAt: performance.now() };
-    mode = 'aiplan';
+    const config = { ...diff.search, robust: { angleErr: diff.angleErr, speedPct: diff.speedPct } };
+    const pool = ensureAiPool();
+    // The opening break (snooker, full rack + ball-in-hand) stays on the main thread — its random
+    // style must not fan out. Everything else fans across the pool when one is available.
+    const isBreak = game.frame.ballInHand && game.frame.reds === 15;
+    if (pool && pool.length && !isBreak) {
+      const reqId = (aiReqId += 1);
+      const variantName = el('game')?.value ?? 'snooker';
+      aiPending = { reqId, diff, config, pending: new Set(pool), scored: [], replies: 0, timer: setTimeout(() => aiTimeout(reqId), AI_TIMEOUT_MS) };
+      for (let i = 0; i < pool.length; i++) {
+        pool[i]._aiReq = reqId;
+        pool[i].postMessage({ variantName, frame: game.frame, pieces: game.pieces, config: { ...config, slice: { workers: pool.length, index: i } }, reqId });
+      }
+    } else {
+      applyAiShot(applyError(chooseShot(game, config), diff)); // synchronous: break, or no workers
+    }
   }, 60 / animSpeed());
 }
 
