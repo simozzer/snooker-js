@@ -11,7 +11,7 @@ import { simulate } from '../src/simulate.js';
 import { twoPhasePlan, posAt } from '../src/motion.js';
 import { chooseShot, chooseShotFinish, applyError } from '../src/ai.js';
 
-const VERSION = '0.10a'; // shown in the top-line title so players can report which build they run (keep in sync with package.json)
+const VERSION = '0.10b'; // shown in the top-line title so players can report which build they run (keep in sync with package.json)
 const VARIANTS = { snooker, doublesnooker: doubleSnooker, pool, nineball, billiards };
 const canvas = document.getElementById('table');
 const ctx = canvas.getContext('2d');
@@ -358,8 +358,25 @@ function updateHud() {
   el('reset').disabled = idle;
 }
 
+// --- render scheduling ---
+// Only run the rAF loop while something is actually moving: a shot animating, the AI lining up,
+// or an angle nudge being held. When the table is static — the player thinking, the AI computing
+// in workers, or the frame over — we draw the settled frame once and stop, instead of repainting
+// 30 balls 60×/second for nothing. Input handlers and state transitions call kick() to wake it.
+let rafScheduled = false;
+function kick() {
+  if (rafScheduled) return;
+  rafScheduled = true;
+  requestAnimationFrame(frame);
+}
+function needsContinuous() {
+  if (mode === 'animating' || mode === 'aiplan') return true;
+  return mode === 'aiming' && !isAITurn() && (leftHeld || rightHeld);
+}
+
 // --- main loop ---
 function frame(now) {
+  rafScheduled = false;
   drawTable();
   if (mode === 'animating') {
     const rate = 0.7 * animSpeed(); // physics-seconds per wall-second (3× in self-play)
@@ -404,13 +421,14 @@ function frame(now) {
   }
   drawSpinPad();
   updateHud();
-  requestAnimationFrame(frame);
+  if (needsContinuous()) kick();
 }
 
 function endAnimation() {
   mode = game.frame.frameOver ? 'gameover' : 'aiming';
   soundIdx = 0;
   el('msg').textContent = pendingMsg;
+  kick(); // render the settled table (and any game-over state) once, then idle
   if (game.frame.frameOver) return;
   aimed = false; // next player must aim before a trajectory is shown
   pendingCue = game.frame.ballInHand ? variant.defaultPlacement(game) : null;
@@ -432,6 +450,7 @@ function fire() {
   pendingCue = null;
   leftHeld = rightHeld = false;
   mode = 'animating';
+  kick();
 }
 
 // Take the AI's chosen shot and start its on-table line-up animation. Shared by the synchronous
@@ -443,6 +462,7 @@ function applyAiShot(shot) {
   spin = { side: 0, vert: 0 };
   aiPlan = { shot, startedAt: performance.now() };
   mode = 'aiplan';
+  kick();
 }
 
 // --- AI search: parallelised across a Web Worker pool ---
@@ -577,18 +597,22 @@ canvas.addEventListener('pointerdown', (ev) => {
   // (Pool allows placement anywhere, so we must not treat every table click as a placement.)
   if (game.frame.ballInHand && cp && Math.hypot(w.x - cp.x, w.y - cp.y) <= 3 * R()) {
     placing = true;
+    kick();
     return;
   }
   dragging = true;
   aimFromPointer(w);
+  kick();
 });
 window.addEventListener('pointermove', (ev) => {
   if (mode !== 'aiming') return;
   const w = evWorld(ev);
   if (placing) {
     if (variant.placementLegal(game, w.x, w.y)) pendingCue = { x: w.x, y: w.y };
+    kick();
   } else if (dragging) {
     aimFromPointer(w);
+    kick();
   }
 });
 window.addEventListener('pointerup', () => { dragging = false; placing = false; });
@@ -599,7 +623,7 @@ function aimFromPointer(w) {
   aimed = true; // a direction has been chosen → the trajectory may now be drawn
 }
 
-el('power').addEventListener('input', (e) => { power = parseFloat(e.target.value); el('pwrval').textContent = power.toFixed(1); });
+el('power').addEventListener('input', (e) => { power = parseFloat(e.target.value); el('pwrval').textContent = power.toFixed(1); kick(); });
 
 const pad = el('spinpad');
 let padDrag = false;
@@ -614,13 +638,13 @@ function spinFromPad(ev) {
   if (m > 1) { s /= m; vt /= m; }
   spin = { side: s, vert: vt };
 }
-pad.addEventListener('pointerdown', (e) => { padDrag = true; spinFromPad(e); });
-window.addEventListener('pointermove', (e) => { if (padDrag) spinFromPad(e); });
+pad.addEventListener('pointerdown', (e) => { padDrag = true; spinFromPad(e); kick(); });
+window.addEventListener('pointermove', (e) => { if (padDrag) { spinFromPad(e); kick(); } });
 window.addEventListener('pointerup', () => { padDrag = false; });
 
 function holdButton(id, setter) {
   const b = el(id);
-  const down = (e) => { e.preventDefault(); if (mode === 'aiming' && !isAITurn()) setter(true); };
+  const down = (e) => { e.preventDefault(); if (mode === 'aiming' && !isAITurn()) { setter(true); kick(); } };
   const up = () => setter(false);
   b.addEventListener('pointerdown', down);
   b.addEventListener('pointerup', up);
@@ -641,6 +665,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowLeft') { leftHeld = true; e.preventDefault(); }
   else if (e.key === 'ArrowRight') { rightHeld = true; e.preventDefault(); }
   else if (e.key === 'Enter') { e.preventDefault(); if (!el('fire').disabled) fire(); }
+  kick();
 });
 window.addEventListener('keyup', (e) => {
   if (e.key === 'ArrowLeft') leftHeld = false;
@@ -648,7 +673,7 @@ window.addEventListener('keyup', (e) => {
 });
 
 el('fire').addEventListener('click', () => { if (mode === 'aiming' && !isAITurn()) fire(); });
-el('reset').addEventListener('click', () => { if (mode === 'aiming' && !isAITurn()) resetControls(); });
+el('reset').addEventListener('click', () => { if (mode === 'aiming' && !isAITurn()) { resetControls(); kick(); } });
 
 // Self-play is computer vs computer → force the menu to "Deadly" and lock it; restore on exit.
 let savedDifficulty = null;
@@ -670,7 +695,13 @@ function syncDifficultyUI() {
 el('selfplay').addEventListener('change', () => {
   syncDifficultyUI();
   if (isAITurn() && mode === 'aiming') aiMove();
+  kick();
 });
+
+// Toggling these mid-turn changes what's shown (or whose turn it is) while the loop may be idle,
+// so wake it — and let the computer take over immediately if Player 2 just became a computer.
+el('ai').addEventListener('change', () => { if (isAITurn() && mode === 'aiming') aiMove(); kick(); });
+el('trajectory').addEventListener('change', kick);
 
 el('game').addEventListener('change', (e) => {
   game = newGame(VARIANTS[e.target.value] ?? snooker);
@@ -689,9 +720,9 @@ function start() {
   pendingCue = game.frame.ballInHand ? variant.defaultPlacement(game) : null;
   resetControls();
   if (isAITurn()) setTimeout(aiMove, 600);
+  kick(); // draw the opening position
 }
 rebuildView();
 syncDifficultyUI();
 el('title').textContent = `${variant.name.toUpperCase()} · v${VERSION} · event-driven two-phase physics`;
-requestAnimationFrame(frame);
-start();
+start(); // start() kicks the first render; the loop then sleeps until something moves

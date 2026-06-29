@@ -122,6 +122,24 @@ export function detectWall(ball, bounds, tNow) {
   return axis ? { time: best, axis } : null;
 }
 
+// Safe upper bound on how far a ball's CENTRE can travel from its position at tNow until it
+// rests. The centre speed is |v0 + aSlide·t| through the slide phase (linear in velocity ⇒
+// convex magnitude ⇒ max at an endpoint) and decays linearly through the roll phase, so the
+// remaining arc length is bounded by these two per-phase rectangles. It is an OVER-estimate, so
+// the broad-phase prune in detectPair never discards a real contact — including screw/swerve
+// curves where the centre speeds up or doubles back mid-slide.
+function reachBound(ball, tNow) {
+  const plan = ball.plan;
+  const tL = tNow - ball.t0; // local plan time
+  if (tL >= plan.tStop) return 0;
+  const vRollMag = v.len(plan.vRoll);
+  if (tL < plan.tRoll) {
+    const slide = Math.max(v.len(ball.vel), vRollMag) * (plan.tRoll - tL);
+    return slide + vRollMag * (plan.tStop - plan.tRoll);
+  }
+  return v.len(ball.vel) * (plan.tStop - tL);
+}
+
 // Earliest contact time between two balls (absolute), or Infinity.
 export function detectPair(a, b, tNow) {
   const R = a.radius + b.radius;
@@ -130,10 +148,15 @@ export function detectPair(a, b, tNow) {
   // downward-crossing search below skips the (separating) contact we may be sitting on and
   // finds the next genuine approach, so a just-resolved pair isn't re-detected at dt~0.
   const dp = v.sub(a.pos, b.pos);
-  if (v.len(dp) - R <= CONTACT_EPS) {
+  const gap = v.len(dp);
+  if (gap - R <= CONTACT_EPS) {
     const vn = v.dot(v.sub(a.vel, b.vel), v.normalize(dp));
     if (vn < 0) return tNow + TIME_EPS;
   }
+
+  // Broad-phase: if neither centre can travel far enough for the gap to close to contact, skip
+  // the (expensive) per-segment quartic search entirely. Conservative bound ⇒ no missed contacts.
+  if (gap - R > reachBound(a, tNow) + reachBound(b, tNow)) return Infinity;
 
   const horizon = Math.max(a.t0 + a.plan.tStop, b.t0 + b.plan.tStop);
   if (horizon <= tNow) return Infinity;
