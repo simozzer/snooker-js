@@ -12,7 +12,7 @@
 // fixed-step scanner provably steps right over it, and asserts the real solver still finds it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { firstQuarticRoot } from '../src/roots.js';
+import { firstQuarticRoot, cubicRoots, smallestPositiveQuadratic } from '../src/roots.js';
 
 // Build the quartic k4·(t−r1)(t−r2)(t²+b·t+c). With disc(t²+b·t+c) < 0 the trailing factor is
 // strictly positive everywhere, so the only sign changes of q are the graze entry/exit at r1,r2.
@@ -102,4 +102,83 @@ test('fuzz: first contact is exact across randomised brief grazes', () => {
   }
   assert.ok(checked > 300, `expected to exercise >300 grazes, ran ${checked}`);
   assert.ok(tightest < 1e-5, `should have exercised sub-1e-5 grazes, tightest was ${tightest}`);
+});
+
+// --- cubicRoots: the bracket-finder underneath firstQuarticRoot (it locates the quartic's
+// critical points by solving q'=0). If this is wrong, the monotonic bracketing above breaks. ---
+
+const cubicAt = (a, b, c, d, t) => ((a * t + b) * t + c) * t + d;
+
+test('cubicRoots: one real root (Cardano, single-real branch)', () => {
+  // (t−2)(t²+1) = t³ − 2t² + t − 2 → one real root at 2, two complex.
+  const roots = cubicRoots(1, -2, 1, -2);
+  assert.equal(roots.length, 1);
+  assert.ok(Math.abs(roots[0] - 2) < 1e-9, `got ${roots[0]}`);
+});
+
+test('cubicRoots: three distinct real roots (trig branch)', () => {
+  // (t−1)(t−2)(t−3) = t³ − 6t² + 11t − 6.
+  const roots = cubicRoots(1, -6, 11, -6).sort((x, y) => x - y);
+  assert.equal(roots.length, 3);
+  for (const [i, want] of [1, 2, 3].entries()) {
+    assert.ok(Math.abs(roots[i] - want) < 1e-9, `root ${i}: ${roots[i]} vs ${want}`);
+  }
+});
+
+test('cubicRoots: a repeated root is found (near-zero discriminant)', () => {
+  // (t−1)²(t+2) = t³ − 3t + 2 → double root at 1, single at −2.
+  const roots = cubicRoots(1, 0, -3, 2);
+  assert.ok(roots.length >= 1);
+  for (const r of roots) assert.ok(Math.abs(cubicAt(1, 0, -3, 2, r)) < 1e-7, `residual at ${r}`);
+  assert.ok(roots.some((r) => Math.abs(r - 1) < 1e-5), 'should recover the double root at 1');
+  assert.ok(roots.some((r) => Math.abs(r + 2) < 1e-5), 'should recover the single root at −2');
+});
+
+test('cubicRoots: degenerates to the quadratic when the leading term vanishes', () => {
+  // a=0 → t² − 3t + 2, roots {1, 2}.
+  const roots = cubicRoots(0, 1, -3, 2).sort((x, y) => x - y);
+  assert.equal(roots.length, 2);
+  assert.ok(Math.abs(roots[0] - 1) < 1e-12 && Math.abs(roots[1] - 2) < 1e-12);
+});
+
+test('cubicRoots: returned roots satisfy the cubic across a randomised sweep', () => {
+  let s = 0x1234567;
+  const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - 0.5) * 8;
+  for (let i = 0; i < 300; i++) {
+    const a = rnd() || 1;
+    const b = rnd();
+    const c = rnd();
+    const d = rnd();
+    for (const r of cubicRoots(a, b, c, d)) {
+      // Scale the residual tolerance by the local slope so flat/steep cubics are judged fairly.
+      const slope = Math.max(1, Math.abs((3 * a * r + 2 * b) * r + c));
+      assert.ok(Math.abs(cubicAt(a, b, c, d, r)) < 1e-6 * slope, `case ${i}: residual at ${r}`);
+    }
+  }
+});
+
+// --- smallestPositiveQuadratic: the exact Phase-1 (straight-line) wall/pair time solve. ---
+
+test('smallestPositiveQuadratic: returns the smaller positive root', () => {
+  // (t−1)(t−3) = t² − 4t + 3.
+  assert.ok(Math.abs(smallestPositiveQuadratic(1, -4, 3) - 1) < 1e-12);
+});
+
+test('smallestPositiveQuadratic: both roots negative → Infinity', () => {
+  // (t+1)(t+3) = t² + 4t + 3.
+  assert.equal(smallestPositiveQuadratic(1, 4, 3), Infinity);
+});
+
+test('smallestPositiveQuadratic: no real roots → Infinity', () => {
+  assert.equal(smallestPositiveQuadratic(1, 0, 1), Infinity); // t² + 1
+});
+
+test('smallestPositiveQuadratic: linear fallback when a≈0', () => {
+  // 2t − 1 = 0 → t = 0.5.
+  assert.ok(Math.abs(smallestPositiveQuadratic(0, 2, -1) - 0.5) < 1e-12);
+});
+
+test('smallestPositiveQuadratic: minT skips a root at/just below the floor', () => {
+  // roots {1, 3}; with minT=2 the first valid root is 3.
+  assert.ok(Math.abs(smallestPositiveQuadratic(1, -4, 3, 2) - 3) < 1e-12);
 });

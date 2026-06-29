@@ -64,6 +64,9 @@ const KIND_RANK = { pocket: 0, wall: 1, pair: 2 };
 // layout: { balls: Ball[], bounds: {minX,maxX,minY,maxY}, pockets: [{center,radius}] }
 // shot:   { ballId, angle, speed, spin:{side,vert} } | null
 export function runEngine(layout, shot, opts = {}) {
+  // The loop runs to `cap`; a caller may pass a SMALLER opts.maxEvents (e.g. the renderer's
+  // shallow trajectory preview). `hitCap` below deliberately reports only the hard MAX_EVENTS
+  // safety ceiling, NOT a caller's smaller cap — so a truncated preview isn't flagged as runaway.
   const cap = opts.maxEvents ?? MAX_EVENTS;
   const wantTimeline = opts.timeline !== false;
   const contactBall = opts.contactBall ?? null; // track this ball's contacts (snooker/pool/carom)

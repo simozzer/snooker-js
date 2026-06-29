@@ -2,11 +2,13 @@
 //
 // Every ball's path is a list of polynomial segments in absolute time (motion.segments):
 // position = P + V·t + C·t² on (lo, hi]. Within a single segment the coefficients are
-// constant, so each event type reduces to the SAME closed-form solve carrom uses — just run
-// once per segment (and, for pairs, once per overlapping segment×segment window):
-//   wall   — per-axis quadratic            → smallestPositiveQuadratic
-//   pair   — |Δp(t)|² = R² ⇒ quartic        → firstQuarticRoot
-//   pocket — same quartic vs a fixed circle → firstQuarticRoot
+// constant, so each event type reduces to a closed-form polynomial solve — run once per segment
+// (and, for pairs, once per overlapping segment×segment window). Each detector finds the first
+// DOWNWARD crossing of its gap (approaching), so a ball resting against / separating from a wall
+// or pair is not re-detected:
+//   wall   — per-axis quadratic gap          → firstApproachQuad
+//   pair   — |Δp(t)|² − R² ⇒ quartic gap      → firstApproachInWindow
+//   pocket — quartic vs a fixed circle        → contactInWindow → firstQuarticRoot
 //
 // All times returned are ABSOLUTE; callers pass tNow as the lower bound for a valid event.
 

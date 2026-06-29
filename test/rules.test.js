@@ -35,6 +35,24 @@ test('hitting a colour first when on a red is a foul; opponent gets the penalty'
   assert.equal(s.turn, 1);
 });
 
+test('a foul penalty escalates to the highest ball involved', () => {
+  const s = newFrame();
+  // On a red, the cue strikes the blue (5) FIRST and pots the black (7): the penalty is the max of
+  // every wrongly-involved ball — black (7) — not the blue, nor the 4-point floor.
+  const r = applyOutcome(s, { firstContact: 'blue', potted: ['black'] });
+  assert.ok(r.foul);
+  assert.equal(s.scores[1], VALUES.black, 'penalty should be the highest involved ball (7)');
+  assert.equal(s.turn, 1);
+});
+
+test('a foul penalty never drops below the floor of 4', () => {
+  const s = newFrame();
+  // On a red, hitting the yellow (2) first is a foul, but the minimum penalty is 4.
+  const r = applyOutcome(s, { firstContact: 'yellow', potted: [] });
+  assert.ok(r.foul);
+  assert.equal(s.scores[1], 4, 'low-value foul still costs the 4-point minimum');
+});
+
 test('a missed shot (legal contact, nothing potted) passes the turn', () => {
   const s = newFrame();
   const r = applyOutcome(s, { firstContact: 'red', potted: [] });

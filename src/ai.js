@@ -455,7 +455,9 @@ export function chooseShot(state, opts = {}) {
       } else if (style === 'attacking') {
         pick = legal.reduce((a, b) => (b.e.spread > a.e.spread ? b : a));
       } else {
-        pick = legal[Math.floor(rng() * legal.length)];
+        // clamp like the style pick above: a custom opts.rng returning exactly 1.0 would otherwise
+        // index past the end (Math.random never does, so this changes no current behaviour).
+        pick = legal[Math.min(legal.length - 1, Math.floor(rng() * legal.length))];
       }
       return { ...pick.c, score: pick.e.safety };
     }

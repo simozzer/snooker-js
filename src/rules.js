@@ -155,12 +155,10 @@ export function applyOutcome(state, info) {
     if (cols.length === 1) {
       const c = cols[0];
       scored += VALUES[c];
-      if (state.reds > 0) {
-        respot.push(c); // colour after a red is re-spotted while reds remain
-      } else {
-        // the colour after the LAST red: re-spot it too, then clearing begins
-        respot.push(c);
-      }
+      // A colour potted on 'any-colour' is always re-spotted — both while reds remain AND for
+      // the colour taken after the last red (clearing only begins once reds === 0 and onColour
+      // is cleared, which the next ballOn() reflects).
+      respot.push(c);
       state.onColour = false;
     }
   } else if (isColour(on)) {

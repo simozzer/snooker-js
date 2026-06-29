@@ -2,15 +2,17 @@
 //
 // The live engine's trajectories are piecewise P + V·t + C·t² (motion.segments), so every contact
 // time is an EXACT polynomial solve — the engine never samples a path:
-//   smallestPositiveQuadratic — straight-line (Phase 1) wall/pair times.
-//   cubicRoots                — real roots of a cubic (Cardano); brackets the quartic below.
-//   firstQuarticRoot          — first downward crossing of the contact quartic |Δp(t)|²−R²,
-//                               bracketed at the quartic's critical points so every sub-interval is
-//                               monotonic. Catches a graze finer than any fixed step; powers pair
-//                               and pocket detection across the curved slide/roll segments.
+//   cubicRoots       — real roots of a cubic (Cardano); used by events.js to bracket the contact
+//                      quartic at its critical points (so every sub-interval is monotonic).
+//   firstQuarticRoot — first downward crossing of the contact quartic |Δp(t)|²−R², bracketed via
+//                      cubicRoots. Catches a graze finer than any fixed step; powers pocket
+//                      detection, and the same bracketing drives pair/wall detection in events.js.
 //
-// firstRoot is a generic sampled fallback, intentionally NOT on any current code path — kept for a
-// future NON-polynomial trajectory model (ball hop, cushion-nose height). See README scope notes.
+// Two helpers here are NOT on the live path, kept as documented utilities:
+//   smallestPositiveQuadratic — exact smaller-positive root; superseded for cushions by events.js
+//                               firstApproachQuad (which skips a wall the ball is LEAVING).
+//   firstRoot                 — generic sampled fallback for a future NON-polynomial trajectory
+//                               model (ball hop, cushion-nose height). See README scope notes.
 
 const EPS = 1e-12;
 
