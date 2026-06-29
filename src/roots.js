@@ -1,9 +1,16 @@
 // roots.js — root finding for collision-time solves.
 //
-// Two tools:
-//   smallestPositiveQuadratic — exact, for straight-line (Phase 1) wall/pair times.
-//   firstRoot — bracketed numerical first-crossing, for pockets (Phase 2) and the
-//               curved spinning trajectories (Phase 3) where no closed form exists.
+// The live engine's trajectories are piecewise P + V·t + C·t² (motion.segments), so every contact
+// time is an EXACT polynomial solve — the engine never samples a path:
+//   smallestPositiveQuadratic — straight-line (Phase 1) wall/pair times.
+//   cubicRoots                — real roots of a cubic (Cardano); brackets the quartic below.
+//   firstQuarticRoot          — first downward crossing of the contact quartic |Δp(t)|²−R²,
+//                               bracketed at the quartic's critical points so every sub-interval is
+//                               monotonic. Catches a graze finer than any fixed step; powers pair
+//                               and pocket detection across the curved slide/roll segments.
+//
+// firstRoot is a generic sampled fallback, intentionally NOT on any current code path — kept for a
+// future NON-polynomial trajectory model (ball hop, cushion-nose height). See README scope notes.
 
 const EPS = 1e-12;
 
@@ -93,9 +100,11 @@ export function firstQuarticRoot(k4, k3, k2, k1, k0, lo, hi, tol = 1e-10) {
   return Infinity;
 }
 
-// First t in (0, horizon] where f crosses from >0 to <=0, refined by bisection.
-// Scans `steps` sub-intervals to bracket the FIRST sign change — the delicate part
-// of event-driven detection: a step too coarse can skip a brief approach.
+// First t in (0, horizon] where f crosses from >0 to <=0, refined by bisection. Currently UNUSED
+// (see header): a generic sampled fallback for a future non-polynomial trajectory. Scans `steps`
+// sub-intervals to bracket the FIRST sign change — the delicate part of event-driven detection: a
+// step too coarse can skip a brief approach (which is exactly why the live paths use the exact,
+// critical-point-bracketed firstQuarticRoot instead; see test/roots.test.js).
 export function firstRoot(f, horizon, steps = 256, tol = 1e-9) {
   let fPrev = f(0);
   if (fPrev <= 0) return 0; // already in contact
