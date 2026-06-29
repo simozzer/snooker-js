@@ -63,6 +63,14 @@ function candidateShots(state) {
 // by a pot-PROBABILITY proxy that accounts for cut angle, shot length, and OBSTRUCTION of both the
 // cue→ghost and ball→pocket lines. Weighted below a pot, so it only biases the leave.
 const POSITION_WEIGHT = 36;
+// Safety play: when a shot pots nothing but legally passes the turn, reward leaving the OPPONENT
+// without a makeable pot (a snooker / awkward leave). Kept below a single ball's value (100) so a
+// real pot is always preferred — the AI only plays safe when it genuinely cannot score.
+//   SAFETY_TRIGGER — only a safety that leaves the opponent's best pot BELOW this prob pays off;
+//     a weak "safety" that still leaves them a chance earns nothing, so the AI attacks instead of
+//     nestling defensively. Raise it for a more defensive AI, lower it for a more aggressive one.
+const SAFETY_WEIGHT = 30;
+const SAFETY_TRIGGER = 0.22;
 const LEAVE_EFOLD = 1.6; // metres: shot-length e-folding in the pot-probability proxy
 
 // Distance from point C to segment A→B (both endpoints inclusive).
@@ -88,16 +96,30 @@ function pathClear(A, B, blockers, clearance, skip) {
 
 // Best makeable next pot from `cuePos`, as a [0,1] pot-probability proxy. Considers every legal
 // next target into every pocket: rejects thin cuts and blocked lines, then scores by cut angle
-// (cos²) × shot-length decay. 0 means snookered / nothing on.
-function bestNextPotProb(state, cuePos) {
+// (cos²) × shot-length decay, WEIGHTED by the value of the ball it would leave on. 0 = snookered.
+//
+// The value weight (`(value/maxValue)²`) is what makes the AI play for the BLACK off every red:
+// when the next ball-on is "any-colour" it prefers a leave on the 7 over an equally-easy leave on
+// a lower colour — the core requirement of a 147. It is deliberately a no-op outside that phase:
+// on reds every target is value 1, and when clearing only one colour is on, so the weight is a
+// flat 1 and the term reduces to pure pot-ease. Normalised by the max target value so the result
+// stays ~[0,1] and POSITION_WEIGHT keeps its calibration.
+//
+// SNOOKER-ONLY: gated on the variant's explicit `playForValue` flag, not on whether `aiValue`
+// happens to vary — so giving another variant per-ball values can never silently turn this on.
+function bestNextPotProb(state, cuePos, adv = false) {
   const variant = state.variant;
   const R = variant.ball.radius;
   const targets = variant.aiTargets(state);
   const pockets = variant.pockets();
   const blockers = state.pieces;
   const clearance = 2 * R - 1e-3;
+  const byValue = adv && variant.playForValue === true; // deadly + snooker: play for the black off every red
+  const valOf = (T) => (variant.aiValue ? variant.aiValue(state.frame, T) : 1);
+  const maxVal = byValue ? Math.max(1, ...targets.map(valOf)) : 1;
   let best = 0;
   for (const T of targets) {
+    const w = byValue ? (valOf(T) / maxVal) ** 2 : 1; // play for the high-value ball (black after a red)
     const skipCG = new Set(['cue', T.id]); // cue→ghost: ignore the cue itself and the target
     const skipTP = new Set([T.id]); // target→pocket: ignore the target
     for (const pk of pockets) {
@@ -113,14 +135,14 @@ function bestNextPotProb(state, cuePos) {
       if (cosCut <= 0.2) continue; // beyond ~78° cut: treat as unmakeable
       if (!pathClear(cuePos, ghost, blockers, clearance, skipCG)) continue;
       if (!pathClear(T.pos, pk.center, blockers, clearance, skipTP)) continue;
-      const p = cosCut * cosCut * Math.exp(-(dCG + dTP) / LEAVE_EFOLD);
+      const p = w * cosCut * cosCut * Math.exp(-(dCG + dTP) / LEAVE_EFOLD);
       if (p > best) best = p;
     }
   }
   return best;
 }
 
-function positionBonus(state, res, pieceById) {
+function positionBonus(state, res, pieceById, adv = false) {
   const variant = state.variant;
   if (!variant.applyOutcome || !variant.aiTargets) return 0;
 
@@ -143,7 +165,7 @@ function positionBonus(state, res, pieceById) {
   } catch {
     return 0;
   }
-  if (!next || !next.continues || next.foul) return 0; // turn ends → our leave doesn't matter
+  if (!next || next.foul) return 0; // a foul is scored by the main foul penalty, not here
 
   // cue's resting position; if it's gone (scratch) there's no position to value
   const cueBall = res.balls.find((b) => b.id === 'cue');
@@ -155,13 +177,25 @@ function positionBonus(state, res, pieceById) {
     .map((b) => { const p = pieceById.get(b.id); return p ? { ...p, pos: { x: b.pos.x, y: b.pos.y } } : null; })
     .filter(Boolean);
   const nextState = { variant, frame: nf, pieces: survivors };
+  const prob = bestNextPotProb(nextState, { x: cueBall.pos.x, y: cueBall.pos.y }, adv);
 
-  const prob = bestNextPotProb(nextState, { x: cueBall.pos.x, y: cueBall.pos.y });
-  if (prob <= 0) return -0.35 * POSITION_WEIGHT; // continued, but snookered / no makeable next shot
-  return POSITION_WEIGHT * prob;
+  if (next.continues) {
+    // our own leave — reward a makeable next pot for us
+    if (prob <= 0) return -0.35 * POSITION_WEIGHT; // continued, but snookered / nothing makeable
+    return POSITION_WEIGHT * prob;
+  }
+
+  // A legal MISS: the turn passes, so `prob` here is the OPPONENT's best next pot from the layout
+  // we leave. SAFETY PLAY — only pays off when it leaves the opponent genuinely stuck (best pot
+  // below SAFETY_TRIGGER); a weak safety that still leaves a chance earns nothing, so the AI
+  // attacks instead of nestling. Deadly + snooker only; others keep the roll-to-target fallback.
+  if (!adv || !variant.safetyPlay) return 0;
+  const oppProb = Math.min(1, prob);
+  if (oppProb >= SAFETY_TRIGGER) return 0;
+  return SAFETY_WEIGHT * (1 - oppProb / SAFETY_TRIGGER);
 }
 
-function scoreOutcome(state, res, pieceById) {
+function scoreOutcome(state, res, pieceById, adv = false) {
   const variant = state.variant;
   const frame = state.frame;
   if (variant.aiScore) return variant.aiScore(state, res, pieceById); // carom & other non-pot games
@@ -179,25 +213,79 @@ function scoreOutcome(state, res, pieceById) {
     if (variant.aiLegalPot(frame, p)) score += variant.aiValue(frame, p) + (variant.aiWinBonus ? variant.aiWinBonus(frame, p) : 0);
     else score -= variant.aiPenalty ? variant.aiPenalty(frame, p) : variant.aiValue(frame, p);
   }
-  score += positionBonus(state, res, pieceById);
+  // Variant-specific multi-pot adjustment (snooker: damp potting >1 red in a stroke — it forfeits
+  // a black and shortens the break). Deadly-only; optional hook, variants without it are unaffected.
+  if (adv && variant.aiPottedAdjust) score += variant.aiPottedAdjust(frame, potted);
+  score += positionBonus(state, res, pieceById, adv);
   return score;
 }
 
-function simScore(state, cuePos, angle, speed, spin) {
+function simScore(state, cuePos, angle, speed, spin, adv = false) {
   const variant = state.variant;
   const pieces = state.pieces.map((p) => (p.id === 'cue' ? { ...p, pos: { ...cuePos } } : p));
   if (!pieces.some((p) => p.id === 'cue')) pieces.push({ id: 'cue', color: variant.cueColor, group: 'cue', kind: 'cue', pos: { ...cuePos } });
   const balls = buildBalls(pieces, variant.ball);
   const pieceById = new Map(pieces.map((p) => [p.id, p]));
   const res = simulate({ balls, bounds: variant.bounds(), pockets: variant.pockets() }, { ballId: 'cue', angle, speed, spin }, { timeline: false, contactBall: 'cue' });
-  return scoreOutcome(state, res, pieceById);
+  return scoreOutcome(state, res, pieceById, adv);
+}
+
+// Simulate one opening-break candidate and report what matters for picking a break by STYLE:
+// whether it's legal (first contact a red, no in-off), how safe the leave is (scoreOutcome, which
+// includes the safety term), and how much it SPREADS the pack (total red displacement; a potted
+// red counts as a big change). Reuses the same engine call as simScore.
+function evalBreak(state, { cuePos, angle, speed, spin }) {
+  const variant = state.variant;
+  const pieces = state.pieces.map((p) => (p.id === 'cue' ? { ...p, pos: { ...cuePos } } : p));
+  const balls = buildBalls(pieces, variant.ball);
+  const pieceById = new Map(pieces.map((p) => [p.id, p]));
+  const res = simulate({ balls, bounds: variant.bounds(), pockets: variant.pockets() }, { ballId: 'cue', angle, speed, spin }, { timeline: false, contactBall: 'cue' });
+  const fc = res.firstContact ? pieceById.get(res.firstContact) : null;
+  const cueBall = res.balls.find((b) => b.id === 'cue');
+  const legal = !!fc && fc.color === 'red' && !res.pocketed.includes('cue') && !!cueBall && !cueBall.pocketed;
+  const after = new Map(res.balls.map((b) => [b.id, b]));
+  let spread = 0;
+  for (const p of pieces) {
+    if (p.color !== 'red') continue;
+    const a = after.get(p.id);
+    spread += !a || a.pocketed ? 0.25 : Math.hypot(a.pos.x - p.pos.x, a.pos.y - p.pos.y);
+  }
+  return { legal, spread, cueX: cueBall ? cueBall.pos.x : 0, safety: scoreOutcome(state, res, pieceById, true) };
 }
 
 // Pick a shot. Returns { cuePos, angle, speed, spin:{side,vert}, score }. The caller maps
 // cuePos → cuePlacement when the frame owes ball-in-hand. opts: maxCandidates / powerScales /
-// angleOffsets / spins (search) and robust:{ angleErr, speedPct, keep } (play-to-reliability).
+// angleOffsets / spins (search), robust:{ angleErr, speedPct, keep } (play-to-reliability), and
+// rng (for the random opening-break style; defaults to Math.random).
 export function chooseShot(state, opts = {}) {
   const variant = state.variant;
+  const adv = !!opts.advanced; // deadly difficulty enables the advanced AI features
+
+  // Opening break (deadly only): the variant supplies style-specific break shots; pick a style at
+  // RANDOM each frame (safe / attacking / firm), then choose the best shot for that style —
+  // least-disturbing leave with the cue back toward baulk for 'safe', biggest pack spread for
+  // 'attacking', a random clean contact for 'firm'.
+  if (adv && variant.aiBreakShots) {
+    const rng = opts.rng ?? Math.random;
+    const styles = ['safe', 'attacking', 'firm'];
+    const style = styles[Math.min(styles.length - 1, Math.floor(rng() * styles.length))];
+    const cands = variant.aiBreakShots(state, style);
+    const legal = cands.map((c) => ({ c, e: evalBreak(state, c) })).filter((x) => x.e.legal);
+    if (legal.length) {
+      let pick;
+      if (style === 'safe') {
+        // minimise pack disturbance, and prefer the cue returning toward baulk (not stuck up-table)
+        const cost = (x) => x.e.spread + 0.3 * Math.max(0, x.e.cueX - x.c.cuePos.x);
+        pick = legal.reduce((a, b) => (cost(b) < cost(a) ? b : a));
+      } else if (style === 'attacking') {
+        pick = legal.reduce((a, b) => (b.e.spread > a.e.spread ? b : a));
+      } else {
+        pick = legal[Math.floor(rng() * legal.length)];
+      }
+      return { ...pick.c, score: pick.e.safety };
+    }
+  }
+
   const maxCandidates = opts.maxCandidates ?? 8;
   const powerScales = opts.powerScales ?? [0.85, 1.0, 1.25, 1.6];
   const angleOffsets = opts.angleOffsets ?? [-0.012, -0.004, 0, 0.004, 0.012];
@@ -212,7 +300,7 @@ export function chooseShot(state, opts = {}) {
       for (const ao of angleOffsets) {
         const angle = c.angle + ao;
         for (const sp of spins) {
-          const score = simScore(state, c.cuePos, angle, speed, sp) + c.geom;
+          const score = simScore(state, c.cuePos, angle, speed, sp, adv) + c.geom;
           scored.push({ cuePos: c.cuePos, angle, speed, spin: sp, score });
         }
       }
@@ -232,7 +320,7 @@ export function chooseShot(state, opts = {}) {
           if (da === 0 && ds === 0) continue;
           const angle = cand.angle + da * robust.angleErr;
           const speed = Math.max(1.0, Math.min(MAX_SPEED, cand.speed * (1 + ds * robust.speedPct)));
-          sum += simScore(state, cand.cuePos, angle, speed, cand.spin);
+          sum += simScore(state, cand.cuePos, angle, speed, cand.spin, adv);
           n += 1;
         }
       }

@@ -22,6 +22,9 @@ const DEADLY_SEARCH = {
   powerScales: [0.8, 0.95, 1.1, 1.3, 1.6],
   angleOffsets: [-0.012, -0.006, 0, 0.006, 0.012],
   spins: [{ side: 0, vert: 0 }, { side: 0, vert: 0.6 }, { side: 0, vert: -0.6 }, { side: 0.5, vert: 0 }, { side: -0.5, vert: 0 }],
+  // 'advanced' gates the deadly-only AI features (play-for-the-black, single-red break-building,
+  // safety play, random opening-break styles). Only the deadly profile sets it.
+  advanced: true,
 };
 const DIFFICULTY = {
   deadly: { angleErr: 0, speedPct: 0, search: DEADLY_SEARCH },
@@ -202,6 +205,20 @@ function drawTable() {
 }
 
 // Draw a ball from render info { fill, stripe, label } (variant-supplied).
+// A ring colour that contrasts the cloth, so every ball reads clearly against the felt (dark
+// cloth → light ring, light cloth → dark ring). Memoised on the cloth string — it rarely changes.
+let _ringFor = { cloth: null, color: '#eee' };
+function clothContrastRing() {
+  const cloth = variant.cloth || '#000';
+  if (cloth !== _ringFor.cloth) {
+    const h = cloth.replace('#', '');
+    const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b; // perceived brightness, 0..255
+    _ringFor = { cloth, color: lum < 140 ? 'rgba(240,240,240,0.95)' : 'rgba(18,18,18,0.9)' };
+  }
+  return _ringFor.color;
+}
+
 function drawBall(x, y, radius, info, ghost = false) {
   const p = toPx(x, y);
   const rp = sPx(radius);
@@ -217,6 +234,15 @@ function drawBall(x, y, radius, info, ghost = false) {
     ctx.fillRect(p.px - rp, p.py - rp * 0.42, rp * 2, rp * 0.84);
     ctx.restore();
   }
+  // Contrasting rim INSIDE the ball edge (band rp-ringW..rp) so each ball reads against the cloth
+  // — esp. dark balls and the 8 on dark felt. Clipped to the face so it stays within the piece.
+  const ringW = Math.max(1.5, rp * 0.16);
+  ctx.save();
+  ctx.beginPath(); ctx.arc(p.px, p.py, rp, 0, Math.PI * 2); ctx.clip();
+  ctx.lineWidth = ringW;
+  ctx.strokeStyle = clothContrastRing();
+  ctx.beginPath(); ctx.arc(p.px, p.py, rp - ringW / 2, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
   if (info.label) {
     ctx.beginPath(); ctx.arc(p.px, p.py, rp * 0.5, 0, Math.PI * 2);
     ctx.fillStyle = '#f5f3ea'; ctx.fill();

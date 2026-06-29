@@ -3,10 +3,10 @@
 // wraps the existing snooker modules (table.js, rack.js, rules.js) so they stay unit-tested.
 
 import * as v from '../vec2.js';
-import { BALL } from '../snooker.js';
+import { BALL, MAX_SPEED } from '../snooker.js';
 import { bounds, pockets, spots, dCentre, inD, HX, HY, baulkX, TABLE } from '../table.js';
 import { openingPieces } from '../rack.js';
-import { newFrame, applyOutcome as rulesApply, ballOn, VALUES } from '../rules.js';
+import { newFrame, applyOutcome as rulesApply, ballOn, VALUES, COLOUR_ORDER } from '../rules.js';
 
 const COLORS = {
   cue: '#f5f3ea', red: '#c0241f', yellow: '#e7c63b', green: '#1f7a43',
@@ -79,6 +79,65 @@ export const snooker = {
     return isLegalPot(ballOn(frame), piece.color);
   },
   aiValue: (frame, piece) => VALUES[piece.color] * 100,
+  // Weight the AI's positional leave by ball value (the black off every red) — snooker-only;
+  // see bestNextPotProb in ai.js. Other variants leave this unset and keep ease-only leaves.
+  playForValue: true,
+  // Break-building (snooker-only): potting >1 red in a single stroke forfeits a black — you only
+  // get ONE colour after potting reds, so two reds at once share a single black and you lose ~7
+  // points of break (and any chance of a 147). Damp each extra red so the AI prefers to pot reds
+  // one at a time and leave the rest on the table. The damp (1.5× a red) only flips the
+  // preference — a forced multi-red (the only scoring shot) still nets positive, so it's taken.
+  aiPottedAdjust(frame, potted) {
+    if (ballOn(frame) !== 'red') return 0; // only relevant while reds are the ball-on
+    const extraReds = potted.filter((p) => p && p.color === 'red').length - 1;
+    return extraReds > 0 ? -extraReds * 1.5 * VALUES.red * 100 : 0;
+  },
+  // Safety play (snooker-only): when no pot is on, the AI scores a legal miss by how hard it leaves
+  // the OPPONENT (see positionBonus in ai.js) — leaving them snookered/awkward instead of an easy
+  // pot. Other variants leave this unset and keep their roll-to-nearest-target fallback.
+  safetyPlay: true,
+  // Opening-break shots (snooker-only). The AI picks a STYLE at random each frame (see chooseShot)
+  // and this returns a pool of candidate shots for it; the engine then picks the best one:
+  //   'safe'      — thin clip on a back-corner red, firm pace so the cue returns toward baulk and
+  //                 the pack stays intact (the realistic, defensive break).
+  //   'attacking' — drive fully into the apex of the pack with pace to spread the reds wide open.
+  //   'firm'      — a clean medium-pace strike into the front of the pack; a positive middle ground.
+  // Returns [] when it isn't the opening break (full rack + ball-in-hand).
+  aiBreakShots(state, style = 'safe') {
+    const f = state.frame;
+    if (!(f.reds === 15 && f.ballInHand && COLOUR_ORDER.every((c) => f.colours[c]))) return [];
+    const reds = state.pieces.filter((p) => p.color === 'red');
+    if (reds.length < 15) return [];
+    const places = this.aiPlacements(state);
+    if (!places.length) return [];
+    const R = BALL.radius;
+    // Only the back-corner reds are reachable from the D — a straight line at the apex is blocked by
+    // the brown/blue/pink sitting on their spots down the spine of the table. So every style clips a
+    // corner red; the STYLE is the contact thickness (k, outward offset in ball-diameters) and pace:
+    //   safe = thin clip + modest pace (cue rebounds to baulk, pack intact);
+    //   attacking = near-full contact + max pace (drive the corner red into the pack to spread it);
+    //   firm = medium contact + medium pace.
+    const maxX = Math.max(...reds.map((r) => r.pos.x));
+    const back = reds.filter((r) => r.pos.x > maxX - R); // back row
+    const top = back.reduce((a, b) => (b.pos.y > a.pos.y ? b : a));
+    const bot = back.reduce((a, b) => (b.pos.y < a.pos.y ? b : a));
+    const aim = (c, tx, ty) => Math.atan2(ty - c.y, tx - c.x);
+    const cfg = {
+      safe: { ks: [0.55, 0.75, 0.95], sps: [0.45, 0.55, 0.65], vert: 0 },
+      attacking: { ks: [0.05, 0.2, 0.35], sps: [0.85, 1.0], vert: 0.3 },
+      firm: { ks: [0.25, 0.45, 0.65], sps: [0.6, 0.72], vert: 0 },
+    }[style];
+    if (!cfg) return [];
+    const out = [];
+    for (const corner of [top, bot]) {
+      const outward = Math.sign(corner.pos.y) || 1;
+      for (const c of places) for (const k of cfg.ks) {
+        const angle = aim(c, corner.pos.x, corner.pos.y + outward * 2 * R * k);
+        for (const sp of cfg.sps) out.push({ cuePos: { ...c }, angle, speed: MAX_SPEED * sp, spin: { side: 0, vert: cfg.vert } });
+      }
+    }
+    return out;
+  },
   aiWinBonus: () => 0,
   aiPlacements(state) {
     const d = dCentre();
