@@ -18,12 +18,13 @@ const ctx = canvas.getContext('2d');
 // AI difficulty: execution error ("hand") + search breadth/depth ("brain").
 const AI_SEARCH = { spins: [{ side: 0, vert: 0 }, { side: 0, vert: 0.6 }, { side: 0, vert: -0.6 }] };
 const DEADLY_SEARCH = {
-  maxCandidates: 14,
+  maxCandidates: 18, // denser candidate breadth than the other levels
   powerScales: [0.8, 0.95, 1.1, 1.3, 1.6],
-  angleOffsets: [-0.012, -0.006, 0, 0.006, 0.012],
+  angleOffsets: [-0.012, -0.008, -0.004, 0, 0.004, 0.008, 0.012], // finer angle grid
   spins: [{ side: 0, vert: 0 }, { side: 0, vert: 0.6 }, { side: 0, vert: -0.6 }, { side: 0.5, vert: 0 }, { side: -0.5, vert: 0 }],
   // 'advanced' gates the deadly-only AI features (play-for-the-black, single-red break-building,
-  // safety play, random opening-break styles). Only the deadly profile sets it.
+  // safety play, random opening-break styles, and the 2-ply red→black→red look-ahead). Only the
+  // deadly profile sets it.
   advanced: true,
 };
 const DIFFICULTY = {

@@ -71,6 +71,10 @@ const POSITION_WEIGHT = 36;
 //     nestling defensively. Raise it for a more defensive AI, lower it for a more aggressive one.
 const SAFETY_WEIGHT = 30;
 const SAFETY_TRIGGER = 0.22;
+// 2-ply look-ahead: reward a red-pot whose leave on the black ALSO recovers a red after the black
+// is potted — i.e. it keeps the red→black→red cycle (a 147) alive. Weighted below the single-ply
+// leave so it only refines among already-good lines.
+const LOOKAHEAD2_WEIGHT = 22;
 const LEAVE_EFOLD = 1.6; // metres: shot-length e-folding in the pot-probability proxy
 
 // Distance from point C to segment A→B (both endpoints inclusive).
@@ -253,6 +257,76 @@ function evalBreak(state, { cuePos, angle, speed, spin }) {
   return { legal, spread, cueX: cueBall ? cueBall.pos.x : 0, safety: scoreOutcome(state, res, pieceById, true) };
 }
 
+// 2-ply look-ahead (deadly + snooker): given a candidate that pots a red and gets on a colour,
+// estimate whether potting the BLACK from the resulting position recovers a red — keeping the
+// red→black→red maximum cycle alive. Bounded: only the black's single best pocket × a small
+// power×draw grid. Returns a bonus to add to the ply-1 score (0 unless it's a clean red-pot that
+// continues onto a colour). Reuses the same engine + bestNextPotProb proxy as the rest of the AI.
+function cycleBonus(state, shot) {
+  const variant = state.variant;
+  const R = variant.ball.radius;
+  // ply 1 — simulate the actual candidate shot to rest (add the cue if the frame owes ball-in-hand)
+  const pieces1 = state.pieces.map((p) => (p.id === 'cue' ? { ...p, pos: { ...shot.cuePos } } : p));
+  if (!pieces1.some((p) => p.id === 'cue')) pieces1.push({ id: 'cue', color: variant.cueColor, group: 'cue', kind: 'cue', pos: { ...shot.cuePos } });
+  const byId1 = new Map(pieces1.map((p) => [p.id, p]));
+  const res1 = simulate({ balls: buildBalls(pieces1, variant.ball), bounds: variant.bounds(), pockets: variant.pockets() }, { ballId: 'cue', angle: shot.angle, speed: shot.speed, spin: shot.spin }, { timeline: false, contactBall: 'cue' });
+  if (res1.pocketed.includes('cue')) return 0;
+  const fc1 = res1.firstContact ? byId1.get(res1.firstContact) : null;
+  const potted1 = res1.pocketed.filter((id) => id !== 'cue').map((id) => byId1.get(id)).filter(Boolean);
+  if (!fc1 || fc1.color !== 'red' || !potted1.length || potted1.some((p) => p.color !== 'red')) return 0;
+  const nf1 = structuredClone(state.frame);
+  const next1 = variant.applyOutcome(nf1, { firstContact: fc1, potted: potted1, cuePotted: false, cueContacts: [], cushionHits: res1.cushionHits || 0 });
+  if (!next1 || next1.foul || !next1.continues) return 0;
+  const cue1 = res1.balls.find((b) => b.id === 'cue');
+  if (!cue1 || cue1.pocketed) return 0;
+  const surv1 = res1.balls.filter((b) => !b.pocketed).map((b) => { const p = byId1.get(b.id); return p ? { ...p, pos: { x: b.pos.x, y: b.pos.y } } : null; }).filter(Boolean);
+  const black = surv1.find((p) => p.color === 'black');
+  if (!black) return 0;
+  const cuePos1 = { x: cue1.pos.x, y: cue1.pos.y };
+  // pick the black's best pocket by clear ghost-ball geometry (cut angle / length)
+  let aimBlack = null;
+  let bestQual = 0;
+  for (const pk of variant.pockets()) {
+    const toP = v.sub(pk.center, black.pos);
+    const dTP = v.len(toP);
+    if (dTP < 1e-6) continue;
+    const dir = v.scale(toP, 1 / dTP);
+    const ghost = v.sub(black.pos, v.scale(dir, 2 * R));
+    const sc = v.sub(ghost, cuePos1);
+    const dCG = v.len(sc);
+    if (dCG < 1e-6) continue;
+    const cos = v.dot(v.scale(sc, 1 / dCG), dir);
+    if (cos <= 0.25) continue;
+    const qual = cos / (1 + dCG + dTP);
+    if (qual > bestQual) { bestQual = qual; aimBlack = { angle: Math.atan2(sc.y, sc.x), pathLen: dCG + dTP }; }
+  }
+  if (!aimBlack) return 0;
+  // ply 2 — try a few black pots; reward the best red-makeability that survives a clean black pot
+  let bestRed = 0;
+  const base = Math.max(1.0, Math.min(MAX_SPEED, Math.sqrt(2 * A_ROLL * aimBlack.pathLen) * 1.6 + 0.6));
+  for (const ps of [0.95, 1.15, 1.4]) {
+    const speed = Math.max(1.0, Math.min(MAX_SPEED, base * ps));
+    for (const vert of [0, 0.6, -0.6]) {
+      const pieces2 = surv1.map((p) => (p.id === 'cue' ? { ...p, pos: { ...cuePos1 } } : p));
+      const byId2 = new Map(pieces2.map((p) => [p.id, p]));
+      const res2 = simulate({ balls: buildBalls(pieces2, variant.ball), bounds: variant.bounds(), pockets: variant.pockets() }, { ballId: 'cue', angle: aimBlack.angle, speed, spin: { side: 0, vert } }, { timeline: false, contactBall: 'cue' });
+      if (res2.pocketed.includes('cue')) continue;
+      const potted2 = res2.pocketed.filter((id) => id !== 'cue').map((id) => byId2.get(id)).filter(Boolean);
+      if (!potted2.some((p) => p.color === 'black') || potted2.some((p) => p.color !== 'black')) continue;
+      const cue2 = res2.balls.find((b) => b.id === 'cue');
+      if (!cue2 || cue2.pocketed) continue;
+      const fc2 = res2.firstContact ? byId2.get(res2.firstContact) : null;
+      const surv2 = res2.balls.filter((b) => !b.pocketed).map((b) => { const p = byId2.get(b.id); return p ? { ...p, pos: { x: b.pos.x, y: b.pos.y } } : null; }).filter(Boolean);
+      const nf2 = structuredClone(nf1);
+      const next2 = variant.applyOutcome(nf2, { firstContact: fc2, potted: potted2, cuePotted: false, cueContacts: [], cushionHits: res2.cushionHits || 0 });
+      if (!next2 || next2.foul) continue;
+      const redProb = bestNextPotProb({ variant, frame: nf2, pieces: surv2 }, { x: cue2.pos.x, y: cue2.pos.y }, true);
+      if (redProb > bestRed) bestRed = redProb;
+    }
+  }
+  return LOOKAHEAD2_WEIGHT * bestRed;
+}
+
 // Pick a shot. Returns { cuePos, angle, speed, spin:{side,vert}, score }. The caller maps
 // cuePos → cuePlacement when the frame owes ball-in-hand. opts: maxCandidates / powerScales /
 // angleOffsets / spins (search), robust:{ angleErr, speedPct, keep } (play-to-reliability), and
@@ -326,6 +400,16 @@ export function chooseShot(state, opts = {}) {
       }
       const expected = sum / n;
       if (!best || expected > best.score) best = { ...cand, score: expected };
+    }
+  }
+
+  // 2-ply refinement (deadly + snooker): re-rank the top ply-1 lines by adding the red→black→red
+  // cycle bonus, so the AI prefers a red-pot that also sets up the black AND the red after it.
+  if (adv && variant.lookahead2 && scored.length) {
+    const K = Math.min(6, scored.length);
+    for (const cand of scored.slice(0, K)) {
+      const refined = cand.score + cycleBonus(state, cand);
+      if (!best || refined > best.score) best = { ...cand, score: refined };
     }
   }
   if (best && best.score > 0) return best;

@@ -96,6 +96,9 @@ export const snooker = {
   // the OPPONENT (see positionBonus in ai.js) — leaving them snookered/awkward instead of an easy
   // pot. Other variants leave this unset and keep their roll-to-nearest-target fallback.
   safetyPlay: true,
+  // 2-ply look-ahead (snooker-only): refine the top red-pot lines by whether the leave on the black
+  // also recovers a red after the black — keeps the 147 cycle alive. See cycleBonus in ai.js.
+  lookahead2: true,
   // Opening-break shots (snooker-only). The AI picks a STYLE at random each frame (see chooseShot)
   // and this returns a pool of candidate shots for it; the engine then picks the best one:
   //   'safe'      — thin clip on a back-corner red, firm pace so the cue returns toward baulk and
