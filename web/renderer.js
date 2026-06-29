@@ -11,7 +11,7 @@ import { simulate } from '../src/simulate.js';
 import { twoPhasePlan, posAt } from '../src/motion.js';
 import { chooseShot, chooseShotFinish, applyError } from '../src/ai.js';
 
-const VERSION = '0.10b'; // shown in the top-line title so players can report which build they run (keep in sync with package.json)
+const VERSION = '0.10c'; // shown in the top-line title so players can report which build they run (keep in sync with package.json)
 const VARIANTS = { snooker, doublesnooker: doubleSnooker, pool, nineball, billiards };
 const canvas = document.getElementById('table');
 const ctx = canvas.getContext('2d');
@@ -21,7 +21,9 @@ const AI_SEARCH = { spins: [{ side: 0, vert: 0 }, { side: 0, vert: 0.6 }, { side
 const DEADLY_SEARCH = {
   maxCandidates: 18, // denser candidate breadth than the other levels
   powerScales: [0.8, 0.95, 1.1, 1.3, 1.6],
-  angleOffsets: [-0.012, -0.008, -0.004, 0, 0.004, 0.008, 0.012], // finer angle grid
+  // ±0.012 rad (~±0.7°) aim window — 5 samples is finer than the pot window itself, so dropping
+  // the old 7-point grid to 5 costs no measurable strength while cutting ~29% of the search.
+  angleOffsets: [-0.012, -0.006, 0, 0.006, 0.012],
   spins: [{ side: 0, vert: 0 }, { side: 0, vert: 0.6 }, { side: 0, vert: -0.6 }, { side: 0.5, vert: 0 }, { side: -0.5, vert: 0 }],
   // 'advanced' gates the deadly-only AI features (play-for-the-black, single-red break-building,
   // safety play, random opening-break styles, and the 2-ply red→black→red look-ahead). Only the
