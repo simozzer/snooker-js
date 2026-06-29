@@ -50,7 +50,9 @@
       details ul { margin: 4px 0 10px; padding-left: 20px; }
       details li { font-size: 13px; color: #cdd6df; margin: 4px 0; line-height: 1.45; }
 
-      /* animated aurora-blob background */
+      /* animated aurora-blob background — soft edges baked into radial
+         gradients (no runtime blur / blend-mode) so only a cheap GPU
+         transform animates, keeping GPU/compositor cost minimal */
       .bg-aurora {
         position: fixed;
         inset: 0;
@@ -61,16 +63,14 @@
       }
       .bg-aurora .blob {
         position: absolute;
-        width: 45vmax;
-        height: 45vmax;
+        width: 60vmax;
+        height: 60vmax;
         border-radius: 50%;
-        filter: blur(80px);
-        opacity: 0.45;
-        mix-blend-mode: screen;
+        will-change: transform;
       }
-      .blob-1 { background: #2e8b57; top: -12%; left: -10%; animation: drift-1 24s ease-in-out infinite; }
-      .blob-2 { background: #0e7490; top: 32%;  left: 52%;  animation: drift-2 29s ease-in-out infinite; }
-      .blob-3 { background: #c8923a; top: 58%;  left: 4%;   animation: drift-3 33s ease-in-out infinite; }
+      .blob-1 { background: radial-gradient(circle at center, rgba(46,139,87,0.40), rgba(46,139,87,0) 70%); top: -18%; left: -14%; animation: drift-1 30s ease-in-out infinite; }
+      .blob-2 { background: radial-gradient(circle at center, rgba(14,116,144,0.38), rgba(14,116,144,0) 70%); top: 26%;  left: 48%;  animation: drift-2 36s ease-in-out infinite; }
+      .blob-3 { background: radial-gradient(circle at center, rgba(200,146,58,0.30), rgba(200,146,58,0) 70%); top: 52%;  left: -2%;  animation: drift-3 42s ease-in-out infinite; }
       @keyframes drift-1 { 50% { transform: translate(30vw, 20vh) scale(1.2); } }
       @keyframes drift-2 { 50% { transform: translate(-25vw, 15vh) scale(0.9); } }
       @keyframes drift-3 { 50% { transform: translate(20vw, -20vh) scale(1.15); } }
